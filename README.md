@@ -1,2 +1,5 @@
 # Build-a-large-model-from-scratch
-Self-study LLM
+该项目是根据清华大学出版社出版的《从零构建大模型：算法、训练与微调》（作者：梁楠），修改并完善相关内容和代码，用于自学。
+### 内容包括：
+### 第一章：Transformer模型基础
+
