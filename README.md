@@ -5,3 +5,5 @@
 - [‌Fundamentals of Transformer Model‌](./‌Fundamentals%20of%20Transformer%20Model‌)
 ### 第二章：GPT模型文本生成核心原理与实现
 - [Core Principles and Implementation of GPT Model Text Generation](./Core%20Principles%20and%20Implementation%20of%20GPT%20Model%20Text%20Generation)
+### 第三章：BERT模型核心实现与预训练
+- [core implementation and pre-training of the Bert model](./core%20implementation%20and%20pre-training%20of%20the%20Bert%20model)
