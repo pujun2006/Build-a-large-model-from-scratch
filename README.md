@@ -9,3 +9,5 @@
 - [core implementation and pre-training of the Bert model](./core%20implementation%20and%20pre-training%20of%20the%20Bert%20model)
 ### 第四章：ViT模型
 - [‌Vision Transformer model‌](./‌Vision%20Transformer%20model‌)
+### 第五章：高效微调策略
+- [High-order fine-tuning strategy](./High-order%20fine-tuning%20strategy)
