@@ -11,3 +11,5 @@
 - [‌Vision Transformer model‌](./‌Vision%20Transformer%20model‌)
 ### 第五章：高效微调策略
 - [High-order fine-tuning strategy](./High-order%20fine-tuning%20strategy)
+### 第六章：数据处理与数据增强
+- [Data Processing and Data Augmentation](./Data%20Processing%20and%20Data%20Augmentation)
