@@ -13,3 +13,5 @@
 - [High-order fine-tuning strategy](./High-order%20fine-tuning%20strategy)
 ### 第六章：数据处理与数据增强
 - [Data Processing and Data Augmentation](./Data%20Processing%20and%20Data%20Augmentation)
+### 第七章：模型性能优化（混合精度训练与分布式训练）
+- [Model Performance Optimization](./Model%20Performance%20Optimization)
