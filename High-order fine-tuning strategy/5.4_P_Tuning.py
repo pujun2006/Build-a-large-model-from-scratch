@@ -5,103 +5,146 @@ from transformers import BertTokenizer, BertForSequenceClassification
 from torch.utils.data import DataLoader, TensorDataset
 
 
-# 定义P-Tuning模块，用于生成可训练的Prompt嵌入
-class PTuning(nn.Module):
-    def __init__(self, prompt_length, embed_dim):
-        super(PTuning, self).__init__()
-        self.prompt_embeddings = nn.Parameter(torch.randn(prompt_length, embed_dim))
+# ==========================================
+# 1. 定义真正的 P-Tuning 模块（包含 Prompt Encoder）
+# ==========================================
+class PTuningEncoder(nn.Module):
+    def __init__(self, prompt_length, embed_dim, hidden_dim=768):
+        super(PTuningEncoder, self).__init__()
+        self.prompt_length = prompt_length
+        self.embed_dim = embed_dim
 
-    def forward(self, embedded_input):
-        batch_size = embedded_input.size(0)
-        prompt_embed = self.prompt_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
-        return torch.cat((prompt_embed, embedded_input), dim=1)
+        # 定义底层可学习的原始嵌入（虚拟 Token 的基础）
+        self.raw_embeddings = nn.Embedding(prompt_length, embed_dim)
 
+        # P-Tuning 的核心：Prompt Encoder (使用 MLP 重参数化，平滑优化空间)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, embed_dim)
+        )
 
-# 加载BERT模型和分词器
-tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-model = BertForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=2)
+    def forward(self, batch_size, device):
+        # 1. 生成虚拟 Token 的索引：[0, 1, 2, ..., prompt_length-1]
+        prompt_ids = torch.arange(self.prompt_length, dtype=torch.long, device=device)
+        prompt_ids = prompt_ids.unsqueeze(0).expand(batch_size, -1)  # [batch_size, prompt_length]
 
+        # 2. 查表获取原始嵌入
+        inputs_embeds = self.raw_embeddings(prompt_ids)  # [batch_size, prompt_length, embed_dim]
 
-# 数据准备函数
-def prepare_data(texts, labels, tokenizer, max_length=128):
-    encodings = tokenizer(texts, truncation=True, padding=True, max_length=max_length, return_tensors="pt")
-    input_ids, attention_mask = encodings["input_ids"], encodings["attention_mask"]
-    labels = torch.tensor(labels)
-    return TensorDataset(input_ids, attention_mask, labels)
+        # 3. 通过 MLP 生成最终的连续 Prompt 嵌入
+        encoded_embeds = self.mlp(inputs_embeds)
 
-
-# 定义示例数据
-texts = ["The model performs well with prompt tuning.", "Prompt-based learning enhances performance."]
-labels = [1, 0]
-dataset = prepare_data(texts, labels, tokenizer)
-dataloader = DataLoader(dataset, batch_size=2)
-
-# P-Tuning参数
-prompt_length = 5  # 自定义Prompt长度
-embed_dim = model.config.hidden_size
+        return encoded_embeds
 
 
-# 将P-Tuning集成到BERT模型中
-class BertWithPTuning(nn.Module):
-    def __init__(self, prompt_length, model):
-        super(BertWithPTuning, self).__init__()
+# ==========================================
+# 2. 将 P-Tuning 集成到 BERT 模型中
+# ==========================================
+class BertWithRealPTuning(nn.Module):
+    def __init__(self, prompt_length, embed_dim, model):
+        super(BertWithRealPTuning, self).__init__()
         self.bert = model
+        self.prompt_length = prompt_length
 
-        # 【关键修正 1】冻结 BERT 主干网络的所有参数，节省显存并防止被误训练
+        # 核心：冻结 BERT 主干网络的所有参数，只训练 P-Tuning 模块
         for param in self.bert.parameters():
             param.requires_grad = False
 
-        self.p_tuning = PTuning(prompt_length, embed_dim)
+        # 实例化 P-Tuning 的 Prompt Encoder 模块
+        self.p_tuning_encoder = PTuningEncoder(prompt_length, embed_dim)
 
     def forward(self, input_ids, attention_mask):
-        embedded_input = self.bert.bert.embeddings(input_ids)
-        embedded_input_with_prompt = self.p_tuning(embedded_input)
+        batch_size = input_ids.size(0)
+        device = input_ids.device
 
-        # 扩展注意力掩码以匹配Prompt长度
-        extended_attention_mask = torch.cat(
-            [torch.ones((attention_mask.size(0), prompt_length), device=attention_mask.device), attention_mask], dim=1)
-        outputs = self.bert(inputs_embeds=embedded_input_with_prompt, attention_mask=extended_attention_mask)
+        # 1. 获取真实文本的词嵌入
+        text_embeddings = self.bert.bert.embeddings(input_ids)  # [batch_size, seq_len, embed_dim]
+
+        # 2. 通过 Prompt Encoder 生成连续的虚拟 Prompt 嵌入
+        prompt_embeddings = self.p_tuning_encoder(batch_size, device)  # [batch_size, prompt_length, embed_dim]
+
+        # 3. 将虚拟 Prompt 拼接到真实文本前面：[Prompt ; Text]
+        combined_embeddings = torch.cat((prompt_embeddings, text_embeddings), dim=1)
+
+        # 4. 扩展注意力掩码（Attention Mask），让模型关注到新增的 Prompt 部分
+        extended_attention_mask = torch.cat([
+            torch.ones((batch_size, self.prompt_length), device=device),
+            attention_mask
+        ], dim=1)
+
+        # 5. 传入冻结的 BERT 主干网络
+        outputs = self.bert(
+            inputs_embeds=combined_embeddings,
+            attention_mask=extended_attention_mask
+        )
 
         return outputs.logits
 
 
-# 实例化模型与训练组件
-p_tuned_model = BertWithPTuning(prompt_length, model)
-optimizer = optim.Adam([{'params': p_tuned_model.p_tuning.parameters()}], lr=1e-4)
-criterion = nn.CrossEntropyLoss()
+# ==========================================
+# 3. 主程序：初始化、数据准备与训练循环
+# ==========================================
+if __name__ == "__main__":
+    # 自动检测设备 (GPU / CPU)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"使用设备: {device}")
 
-# 训练过程
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-p_tuned_model.to(device)
+    # 加载分词器和基础模型
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    base_model = BertForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=2)
 
+    # 准备稍微充实一点的示例数据（避免极小样本造成的剧烈震荡）
+    texts = [
+        "The model performs exceptionally well with P-Tuning.",
+        "Prompt-based learning enhances performance.",
+        "This is a fantastic approach for few-shot learning.",
+        "The results are terrible and completely incorrect."
+    ]
+    labels = [1, 1, 1, 0]
 
-def train_one_epoch(dataloader, model, criterion, optimizer):
-    model.train()
-    total_loss, correct_predictions = 0, 0
+    # 数据编码与打包
+    encodings = tokenizer(texts, truncation=True, padding=True, max_length=64, return_tensors="pt")
+    dataset = TensorDataset(encodings["input_ids"], encodings["attention_mask"], torch.tensor(labels))
+    dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
 
-    for batch in dataloader:
-        input_ids, attention_mask, labels = [x.to(device) for x in batch]
+    # 超参数配置
+    prompt_length = 5
+    embed_dim = base_model.config.hidden_size
 
-        # 前向传播
-        logits = model(input_ids=input_ids, attention_mask=attention_mask)
-        loss = criterion(logits, labels)
+    # 实例化包装后的 P-Tuning 模型并移动到指定设备
+    p_tuned_model = BertWithRealPTuning(prompt_length, embed_dim, base_model)
+    p_tuned_model.to(device)
 
-        # 反向传播
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+    # 定义优化器（只优化 p_tuning_encoder 中的参数）和损失函数
+    optimizer = optim.AdamW(p_tuned_model.p_tuning_encoder.parameters(), lr=5e-4, weight_decay=0.01)
+    criterion = nn.CrossEntropyLoss()
 
-        # 记录损失
-        total_loss += loss.item()
-        _, preds = torch.max(logits, dim=1)
-        correct_predictions += torch.sum(preds == labels)
+    # 开始训练循环
+    epochs = 5
+    print("\n开始 P-Tuning 训练...")
 
-    avg_loss = total_loss / len(dataloader)
-    accuracy = correct_predictions.double() / len(dataloader.dataset)
-    return avg_loss, accuracy
+    p_tuned_model.train()
+    for epoch in range(epochs):
+        total_loss = 0
+        for batch in dataloader:
+            input_ids, attention_mask, batch_labels = [b.to(device) for b in batch]
 
+            optimizer.zero_grad()
 
-# 运行训练
-for epoch in range(3):
-    avg_loss, accuracy = train_one_epoch(dataloader, p_tuned_model, criterion, optimizer)
-    print(f"Epoch {epoch + 1} Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}")
+            # 前向传播
+            logits = p_tuned_model(input_ids, attention_mask)
+
+            # 计算损失
+            loss = criterion(logits, batch_labels)
+
+            # 反向传播与优化
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(dataloader)
+        print(f"Epoch {epoch + 1}/{epochs} | Loss: {avg_loss:.4f}")
+
+    print("\n训练结束！P-Tuning 模块运行正常。")
