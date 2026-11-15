@@ -27,38 +27,43 @@ class BertWithLoRA(nn.Module):
         for param in self.bert.parameters():
             param.requires_grad = False
 
+        hidden_size = self.bert.config.hidden_size
+        num_layers = self.bert.config.num_hidden_layers
+
         # 为每层增加低秩适应模块
         self.lora_modules = nn.ModuleList([
-            LoRA(self.bert.config.hidden_size, lora_rank)
-            for _ in range(self.bert.config.num_hidden_layers)
+            LoRA(hidden_size, lora_rank)
+            for _ in range(num_layers)
         ])
 
-        # 【新增】分类头：将 768 维映射为分类类别数（2类）
-        self.classifier = nn.Linear(self.bert.config.hidden_size, num_classes)
+        # 分类头：将 768 维映射为分类类别数（2类）
+        self.classifier = nn.Linear(hidden_size, num_classes)
 
     def forward(self, input_ids, attention_mask):
+        # 开启 output_hidden_states=True 获取每一层的输出隐状态
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+        hidden_states = outputs.hidden_states
 
-        # 【修复】将 tuple 转为 list，以便能够修改各层隐状态
-        hidden_states = list(outputs.hidden_states)
+        # 在特征流动过程中逐层累加 LoRA 修正量
+        current_hidden = hidden_states[0]
 
-        # 在每层应用低秩模块进行残差修正
         for i, lora in enumerate(self.lora_modules):
-            hidden_states[i + 1] = hidden_states[i + 1] + lora(hidden_states[i + 1])
+            layer_out = hidden_states[i + 1]
+            current_hidden = layer_out + lora(layer_out)
 
-        # 取出最后一层 [CLS] 标记的输出 (形状: [batch_size, 768])
-        cls_output = hidden_states[-1][:, 0, :]
+        # 取出最后一层经过修正后的 [CLS] 标记输出 (形状: [batch_size, 768])
+        cls_output = current_hidden[:, 0, :]
 
         # 通过分类头得到 logits (形状: [batch_size, num_classes])
         logits = self.classifier(cls_output)
         return logits
 
 
-# 3. 加载BERT分词器
+# 3. 加载 BERT 分词器
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
 
-# 4. 准备示例数据
+# 4. 准备示例数据（适当扩充样本，使得准确率变化更平滑）
 def prepare_data(texts, labels, tokenizer, max_length=128):
     encodings = tokenizer(texts, truncation=True, padding=True, max_length=max_length, return_tensors="pt")
     input_ids, attention_mask = encodings["input_ids"], encodings["attention_mask"]
@@ -66,22 +71,27 @@ def prepare_data(texts, labels, tokenizer, max_length=128):
     return TensorDataset(input_ids, attention_mask, labels)
 
 
-texts = ["LoRA efficiently adapts large models.", "This technique uses low-rank updates."]
-labels = [1, 0]
+texts = [
+    "LoRA efficiently adapts large models.",
+    "This technique uses low-rank updates.",
+    "The weather is very nice today.",
+    "I love programming in Python."
+]
+labels = [1, 1, 0, 0]
 dataset = prepare_data(texts, labels, tokenizer)
-dataloader = DataLoader(dataset, batch_size=2)
+dataloader = DataLoader(dataset, batch_size=2, shuffle=True)
 
 # 5. 实例化模型与训练组件
 model = BertWithLoRA(lora_rank=4, num_classes=2)
 
-# 【修复】优化器需要同时优化 lora 模块参数 和 分类头参数
+# 优化器同时优化 lora 模块参数 和 分类头参数
 optimizer = optim.Adam(
     list(model.lora_modules.parameters()) + list(model.classifier.parameters()),
     lr=1e-4
 )
 criterion = nn.CrossEntropyLoss()
 
-# 训练过程
+# 训练过程设备配置
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
@@ -93,12 +103,11 @@ def train_one_epoch(dataloader, model, criterion, optimizer):
     for batch in dataloader:
         input_ids, attention_mask, labels = [x.to(device) for x in batch]
 
-        # 前向传播直接返回 logits
+        # 前向传播
         logits = model(input_ids=input_ids, attention_mask=attention_mask)
-
         loss = criterion(logits, labels)
 
-        # 反向传播
+        # 反向传播与优化
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -114,7 +123,6 @@ def train_one_epoch(dataloader, model, criterion, optimizer):
 
 
 # 6. 运行训练
-for epoch in range(3):
+for epoch in range(5):
     avg_loss, accuracy = train_one_epoch(dataloader, model, criterion, optimizer)
-    # 【修复】修正了 print 语句的换行和格式错误
     print(f"Epoch {epoch + 1} Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}")
