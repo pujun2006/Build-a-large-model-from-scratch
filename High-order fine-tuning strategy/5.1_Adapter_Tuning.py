@@ -5,7 +5,7 @@ from transformers import BertModel, BertTokenizer
 from torch.utils.data import DataLoader, TensorDataset
 
 
-# 1. Adapter模块的定义
+# 1. Adapter 模块的定义
 class Adapter(nn.Module):
     def __init__(self, input_dim, bottleneck_dim=64):
         super(Adapter, self).__init__()
@@ -20,46 +20,65 @@ class Adapter(nn.Module):
         return x + x_up  # 残差连接
 
 
-# 2. 带有 Adapter 和分类头的 BERT 模型
+# 2. 层的包装器：兼容返回元组或纯 Tensor 的不同 Transformers 版本
+class AdapterWrappedBertLayer(nn.Module):
+    def __init__(self, original_layer, adapter_dim=64):
+        super(AdapterWrappedBertLayer, self).__init__()
+        self.layer = original_layer
+        # 获取 hidden_size
+        hidden_size = self.layer.output.dense.out_features
+        self.adapter = Adapter(hidden_size, adapter_dim)
+
+    def forward(self, hidden_states, *args, **kwargs):
+        # 调用原 BERT 层
+        layer_outputs = self.layer(hidden_states, *args, **kwargs)
+
+        # 兼容处理：如果返回的是 tuple，则提取第一个元素并保留其余返回值
+        if isinstance(layer_outputs, tuple):
+            output_tensor = layer_outputs[0]
+            adapted_tensor = self.adapter(output_tensor)
+            return (adapted_tensor,) + layer_outputs[1:]
+        else:
+            # 如果返回的是纯 Tensor
+            adapted_tensor = self.adapter(layer_outputs)
+            return adapted_tensor
+
+
+# 3. 带有 Adapter 和分类头的 BERT 模型
 class BertWithAdapter(nn.Module):
     def __init__(self, adapter_dim=64, num_classes=2):
         super(BertWithAdapter, self).__init__()
         self.bert = BertModel.from_pretrained("bert-base-uncased")
 
-        # 冻结 BERT 原有参数
+        # 1. 冻结 BERT 原有参数
         for param in self.bert.parameters():
             param.requires_grad = False
 
-        # 为每一层 Transformer 创建一个 Adapter 模块
-        self.adapters = nn.ModuleList(
-            [Adapter(self.bert.config.hidden_size, adapter_dim) for _ in range(self.bert.config.num_hidden_layers)]
-        )
+        # 2. 用包装了 Adapter 的层原地替换 BERT 原有的 encoder layer
+        hidden_size = self.bert.config.hidden_size
+        for i, layer in enumerate(self.bert.encoder.layer):
+            self.bert.encoder.layer[i] = AdapterWrappedBertLayer(layer, adapter_dim)
 
-        # 【新增】分类头：将 BERT 最后的 768 维 [CLS] 特征映射为类别数（这里是 2 类）
-        self.classifier = nn.Linear(self.bert.config.hidden_size, num_classes)
+        # 3. 分类头
+        self.classifier = nn.Linear(hidden_size, num_classes)
 
     def forward(self, input_ids, attention_mask):
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
-        hidden_states = list(outputs.hidden_states)
+        # 直接调用 BERT 模型，内部会顺畅执行我们替换后的包装层
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
 
-        # 逐层注入 Adapter
-        for i in range(len(self.adapters)):
-            delta = self.adapters[i](hidden_states[i + 1])
-            hidden_states[i + 1] = hidden_states[i + 1] + delta
+        # 获取最终输出的 [CLS] 向量 (形状: [batch_size, 768])
+        cls_output = outputs.last_hidden_state[:, 0, :]
 
-        # 取出最后一层 [CLS] 标记的向量 (形状: [batch_size, 768])
-        cls_output = hidden_states[-1][:, 0, :]
-
-        # 通过分类头映射为 logits (形状: [batch_size, num_classes])
+        # 通过分类头映射为 logits
         logits = self.classifier(cls_output)
         return logits
 
 
-# 3. 加载BERT分词器
+# 4. 加载 BERT 分词器
 tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
 
-# 4. 准备示例数据
+# 5. 准备示例数据
 def prepare_data(texts, labels, tokenizer, max_length=128):
     encodings = tokenizer(texts, truncation=True, padding=True, max_length=max_length, return_tensors="pt")
     input_ids, attention_mask = encodings["input_ids"], encodings["attention_mask"]
@@ -72,14 +91,12 @@ labels = [1, 0]
 dataset = prepare_data(texts, labels, tokenizer)
 dataloader = DataLoader(dataset, batch_size=2)
 
-# 5. 实例化模型与训练组件
+# 6. 实例化模型与训练组件
 model = BertWithAdapter(adapter_dim=64, num_classes=2)
 
-# 【关键修改】优化器需要同时优化 adapter 参数 和 分类头 (classifier) 参数
-optimizer = optim.Adam(
-    list(model.adapters.parameters()) + list(model.classifier.parameters()),
-    lr=1e-4
-)
+# 收集所有需要训练的参数（遍历模型中所有的 Adapter 以及分类头）
+adapter_params = [p for n, p in model.named_parameters() if "adapter" in n or "classifier" in n]
+optimizer = optim.Adam(adapter_params, lr=1e-4)
 criterion = nn.CrossEntropyLoss()
 
 # 训练设备配置
@@ -94,17 +111,13 @@ def train_one_epoch(dataloader, model, criterion, optimizer):
     for batch in dataloader:
         input_ids, attention_mask, labels = [x.to(device) for x in batch]
 
-        # 前向传播直接返回 logits
         logits = model(input_ids=input_ids, attention_mask=attention_mask)
-
         loss = criterion(logits, labels)
 
-        # 反向传播与优化
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        # 记录损失与准确率
         total_loss += loss.item()
         _, preds = torch.max(logits, dim=1)
         correct_predictions += torch.sum(preds == labels).item()
@@ -114,7 +127,7 @@ def train_one_epoch(dataloader, model, criterion, optimizer):
     return avg_loss, accuracy
 
 
-# 6. 运行训练
+# 7. 运行训练
 for epoch in range(3):
     avg_loss, accuracy = train_one_epoch(dataloader, model, criterion, optimizer)
     print(f"Epoch {epoch + 1} Loss: {avg_loss:.4f}, Accuracy: {accuracy:.4f}")
