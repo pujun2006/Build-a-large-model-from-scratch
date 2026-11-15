@@ -6,12 +6,12 @@ rouge_score==0.1.2
 transformers==5.16.1
 pandas==2.3.3
 zhon==2.1.1
-
+gensim==4.4.0
 
 
 
 scikit-learn==1.7.2
-gensim==4.4.0
+
 spacy==3.8.16
 networkx==3.4.2
 torch_geometric==2.8.0.post1
