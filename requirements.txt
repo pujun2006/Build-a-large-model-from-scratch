@@ -5,7 +5,7 @@ nltk==3.10.3
 rouge_score==0.1.2
 transformers==5.16.1
 pandas==2.3.3
-
+zhon==2.1.1
 
 
 
