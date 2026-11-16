@@ -15,3 +15,5 @@
 - [Data Processing and Data Augmentation](./Data%20Processing%20and%20Data%20Augmentation)
 ### 第七章：模型性能优化（混合精度训练与分布式训练）
 - [Model Performance Optimization](./Model%20Performance%20Optimization)
+### 第八章：对比学习与对抗训练
+- [Contrastive Learning and Adversarial Training](./Contrastive%20Learning%20and%20Adversarial%20Training)
