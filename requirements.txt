@@ -3,7 +3,7 @@ torchvision==0.29.0
 jieba==0.42.1
 nltk==3.10.3
 rouge_score==0.1.2
-transformers==5.16.1
+transformers==5.20.2
 pandas==2.3.3
 zhon==2.1.1
 gensim==4.4.0
