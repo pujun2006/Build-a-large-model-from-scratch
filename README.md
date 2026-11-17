@@ -17,3 +17,5 @@
 - [Model Performance Optimization](./Model%20Performance%20Optimization)
 ### 第八章：对比学习与对抗训练
 - [Contrastive Learning and Adversarial Training](./Contrastive%20Learning%20and%20Adversarial%20Training)
+### 第九章：自适应优化器与动态学习率调度
+- [Adaptive Optimizers and Dynamic Learning Rate Adjustment](./Adaptive%20Optimizers%20and%20Dynamic%20Learning%20Rate%20Adjustment)
