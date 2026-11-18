@@ -23,3 +23,5 @@
 - [Model Distillation and Pruning](./Model%20Distillation%20and%20Pruning)
 ### 第十一章：模型训练实战
 - [Practical Model Training](./Practical%20Model%20Training)
+### 第十二章：模型微调实战
+- [Practical Guide to Model Fine-Tuning](./Practical%20Guide%20to%20Model%20Fine-Tuning)
