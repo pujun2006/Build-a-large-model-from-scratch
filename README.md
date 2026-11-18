@@ -21,3 +21,5 @@
 - [Adaptive Optimizers and Dynamic Learning Rate Adjustment](./Adaptive%20Optimizers%20and%20Dynamic%20Learning%20Rate%20Adjustment)
 ### 第十章：模型蒸馏与剪枝
 - [Model Distillation and Pruning](./Model%20Distillation%20and%20Pruning)
+### 第十一章：模型训练实战
+- [Practical Model Training](./Practical%20Model%20Training)
